@@ -42,6 +42,7 @@ public:
             }
             fflush(fp);
         }
+        setvbuf(fp, NULL, _IOFBF, 1024 * 1024); // 1MB buffer
     }
 
     ~FileStorage() {
