@@ -9,7 +9,7 @@
 using namespace std;
 
 const string DB_FILE = "storage.db";
-const int NUM_BUCKETS = 100000;
+const int NUM_BUCKETS = 250000;
 
 struct Entry {
     char index[64];
