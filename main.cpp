@@ -20,9 +20,10 @@ struct Entry {
 };
 
 unsigned long hash_index(const string& s) {
-    unsigned long hash = 5381;
+    unsigned long hash = 14695981039346656037ULL;
     for (char c : s) {
-        hash = ((hash << 5) + hash) + c;
+        hash ^= (unsigned char)c;
+        hash *= 1099511628211ULL;
     }
     return hash % NUM_BUCKETS;
 }
@@ -93,7 +94,6 @@ public:
             file.seekp(prev_offset + offsetof(Entry, next));
             file.write(reinterpret_cast<char*>(&new_offset), sizeof(long long));
         }
-        file.flush();
     }
 
     void remove(const string& index, int value) {
@@ -121,7 +121,6 @@ public:
                         file.seekp(prev_offset + offsetof(Entry, next));
                         file.write(reinterpret_cast<char*>(&e.next), sizeof(long long));
                     }
-                    file.flush();
                     return;
                 }
             }
