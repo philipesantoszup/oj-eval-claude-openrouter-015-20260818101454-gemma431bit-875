@@ -9,7 +9,7 @@
 using namespace std;
 
 const char* DB_FILE = "storage.db";
-const int NUM_BUCKETS = 100000;
+const int NUM_BUCKETS = 1000000;
 
 struct Entry {
     char index[64];
@@ -30,7 +30,6 @@ unsigned long hash_index(const string& s) {
 
 class FileStorage {
     FILE* fp;
-    long long buckets[NUM_BUCKETS];
 
 public:
     FileStorage() {
@@ -43,9 +42,6 @@ public:
             }
             fflush(fp);
         }
-
-        fseek(fp, 0, SEEK_SET);
-        fread(buckets, sizeof(long long), NUM_BUCKETS, fp);
     }
 
     ~FileStorage() {
@@ -54,7 +50,10 @@ public:
 
     void insert(const string& index, int value) {
         unsigned long h = hash_index(index);
-        long long current_offset = buckets[h];
+        long long current_offset;
+        fseek(fp, h * sizeof(long long), SEEK_SET);
+        fread(&current_offset, sizeof(long long), 1, fp);
+
         long long prev_offset = -1;
 
         while (current_offset != -1) {
@@ -82,9 +81,8 @@ public:
         fwrite(&new_entry, sizeof(Entry), 1, fp);
 
         if (prev_offset == -1) {
-            buckets[h] = new_offset;
             fseek(fp, h * sizeof(long long), SEEK_SET);
-            fwrite(&buckets[h], sizeof(long long), 1, fp);
+            fwrite(&new_offset, sizeof(long long), 1, fp);
         } else {
             fseek(fp, prev_offset + offsetof(Entry, next), SEEK_SET);
             fwrite(&new_offset, sizeof(long long), 1, fp);
@@ -93,7 +91,10 @@ public:
 
     void remove(const string& index, int value) {
         unsigned long h = hash_index(index);
-        long long current_offset = buckets[h];
+        long long current_offset;
+        fseek(fp, h * sizeof(long long), SEEK_SET);
+        fread(&current_offset, sizeof(long long), 1, fp);
+
         long long prev_offset = -1;
 
         while (current_offset != -1) {
@@ -107,9 +108,8 @@ public:
                     fwrite(&del, sizeof(bool), 1, fp);
 
                     if (prev_offset == -1) {
-                        buckets[h] = e.next;
                         fseek(fp, h * sizeof(long long), SEEK_SET);
-                        fwrite(&buckets[h], sizeof(long long), 1, fp);
+                        fwrite(&e.next, sizeof(long long), 1, fp);
                     } else {
                         fseek(fp, prev_offset + offsetof(Entry, next), SEEK_SET);
                         fwrite(&e.next, sizeof(long long), 1, fp);
@@ -124,7 +124,10 @@ public:
 
     void find(const string& index) {
         unsigned long h = hash_index(index);
-        long long current_offset = buckets[h];
+        long long current_offset;
+        fseek(fp, h * sizeof(long long), SEEK_SET);
+        fread(&current_offset, sizeof(long long), 1, fp);
+
         vector<int> results;
 
         while (current_offset != -1) {
