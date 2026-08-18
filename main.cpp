@@ -5,15 +5,11 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
 
 using namespace std;
 
 const char* DB_FILE = "storage.db";
-const int NUM_BUCKETS = 1000000;
+const int NUM_BUCKETS = 100000;
 
 struct Entry {
     char index[64];
@@ -33,125 +29,112 @@ unsigned long hash_index(const string& s) {
 }
 
 class FileStorage {
-    int fd;
-    void* map_ptr;
-    size_t map_size;
-
-    void extend_file(size_t new_size) {
-        if (ftruncate(fd, new_size) == -1) {
-            // Handle error
-        }
-        if (map_ptr) munmap(map_ptr, map_size);
-        map_ptr = mmap(NULL, new_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        map_size = new_size;
-    }
+    FILE* fp;
+    long long buckets[NUM_BUCKETS];
 
 public:
     FileStorage() {
-        fd = open(DB_FILE, O_RDWR | O_CREAT, 0644);
-        struct stat st;
-        fstat(fd, &st);
-        if (st.st_size == 0) {
-            size_t initial_size = NUM_BUCKETS * sizeof(long long);
-            ftruncate(fd, initial_size);
-            map_ptr = mmap(NULL, initial_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            map_size = initial_size;
-            long long* buckets = (long long*)map_ptr;
+        fp = fopen(DB_FILE, "rb+");
+        if (!fp) {
+            fp = fopen(DB_FILE, "wb+");
             for (int i = 0; i < NUM_BUCKETS; ++i) {
-                buckets[i] = -1;
+                long long val = -1;
+                fwrite(&val, sizeof(long long), 1, fp);
             }
-        } else {
-            map_ptr = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            map_size = st.st_size;
+            fflush(fp);
         }
+        setvbuf(fp, NULL, _IOFBF, 1024 * 1024);
+        fseek(fp, 0, SEEK_SET);
+        fread(buckets, sizeof(long long), NUM_BUCKETS, fp);
     }
 
     ~FileStorage() {
-        if (map_ptr) munmap(map_ptr, map_size);
-        if (fd != -1) close(fd);
+        if (fp) fclose(fp);
     }
 
     void insert(const string& index, int value) {
         unsigned long h = hash_index(index);
-        long long* buckets = (long long*)map_ptr;
         long long current_offset = buckets[h];
         long long prev_offset = -1;
 
         while (current_offset != -1) {
-            if (current_offset >= (long long)map_size) break;
-            Entry* e = (Entry*)((char*)map_ptr + current_offset);
-            if (!e->deleted && e->index_len == index.length() && memcmp(e->index, index.c_str(), e->index_len) == 0) {
-                if (e->value == value) return;
+            fseek(fp, current_offset, SEEK_SET);
+            Entry e;
+            fread(&e, sizeof(Entry), 1, fp);
+            if (!e.deleted && e.index_len == index.length() && memcmp(e.index, index.c_str(), e.index_len) == 0) {
+                if (e.value == value) return;
             }
             prev_offset = current_offset;
-            current_offset = e->next;
+            current_offset = e.next;
         }
 
-        size_t new_offset = map_size;
-        if (new_offset < (size_t)NUM_BUCKETS * sizeof(long long)) {
-            new_offset = (size_t)NUM_BUCKETS * sizeof(long long);
-        }
+        fseek(fp, 0, SEEK_END);
+        long long new_offset = ftell(fp);
+        Entry new_entry;
+        memset(new_entry.index, 0, 64);
+        memcpy(new_entry.index, index.c_str(), min((int)index.length(), 64));
+        new_entry.index_len = (uint8_t)min((int)index.length(), 64);
+        new_entry.value = value;
+        new_entry.next = -1;
+        new_entry.deleted = false;
 
-        if (new_offset + sizeof(Entry) > map_size) {
-            extend_file(map_size + (1024 * 1024));
-            buckets = (long long*)map_ptr;
-        }
-
-        Entry* new_entry = (Entry*)((char*)map_ptr + new_offset);
-        memset(new_entry->index, 0, 64);
-        memcpy(new_entry->index, index.c_str(), min((int)index.length(), 64));
-        new_entry->index_len = (uint8_t)min((int)index.length(), 64);
-        new_entry->value = value;
-        new_entry->next = -1;
-        new_entry->deleted = false;
+        fseek(fp, new_offset, SEEK_SET);
+        fwrite(&new_entry, sizeof(Entry), 1, fp);
 
         if (prev_offset == -1) {
             buckets[h] = new_offset;
+            fseek(fp, h * sizeof(long long), SEEK_SET);
+            fwrite(&buckets[h], sizeof(long long), 1, fp);
         } else {
-            Entry* prev_e = (Entry*)((char*)map_ptr + prev_offset);
-            prev_e->next = new_offset;
+            fseek(fp, prev_offset + offsetof(Entry, next), SEEK_SET);
+            fwrite(&new_offset, sizeof(long long), 1, fp);
         }
     }
 
     void remove(const string& index, int value) {
         unsigned long h = hash_index(index);
-        long long* buckets = (long long*)map_ptr;
         long long current_offset = buckets[h];
         long long prev_offset = -1;
 
         while (current_offset != -1) {
-            if (current_offset >= (long long)map_size) break;
-            Entry* e = (Entry*)((char*)map_ptr + current_offset);
-            if (!e->deleted && e->index_len == index.length() && memcmp(e->index, index.c_str(), e->index_len) == 0) {
-                if (e->value == value) {
-                    e->deleted = true;
+            fseek(fp, current_offset, SEEK_SET);
+            Entry e;
+            fread(&e, sizeof(Entry), 1, fp);
+            if (!e.deleted && e.index_len == index.length() && memcmp(e.index, index.c_str(), e.index_len) == 0) {
+                if (e.value == value) {
+                    fseek(fp, current_offset + offsetof(Entry, deleted), SEEK_SET);
+                    bool del = true;
+                    fwrite(&del, sizeof(bool), 1, fp);
+
                     if (prev_offset == -1) {
-                        buckets[h] = e->next;
+                        buckets[h] = e.next;
+                        fseek(fp, h * sizeof(long long), SEEK_SET);
+                        fwrite(&buckets[h], sizeof(long long), 1, fp);
                     } else {
-                        Entry* prev_e = (Entry*)((char*)map_ptr + prev_offset);
-                        prev_e->next = e->next;
+                        fseek(fp, prev_offset + offsetof(Entry, next), SEEK_SET);
+                        fwrite(&e.next, sizeof(long long), 1, fp);
                     }
                     return;
                 }
             }
             prev_offset = current_offset;
-            current_offset = e->next;
+            current_offset = e.next;
         }
     }
 
     void find(const string& index) {
         unsigned long h = hash_index(index);
-        long long* buckets = (long long*)map_ptr;
         long long current_offset = buckets[h];
         vector<int> results;
 
         while (current_offset != -1) {
-            if (current_offset >= (long long)map_size) break;
-            Entry* e = (Entry*)((char*)map_ptr + current_offset);
-            if (!e->deleted && e->index_len == index.length() && memcmp(e->index, index.c_str(), e->index_len) == 0) {
-                results.push_back(e->value);
+            fseek(fp, current_offset, SEEK_SET);
+            Entry e;
+            fread(&e, sizeof(Entry), 1, fp);
+            if (!e.deleted && e.index_len == index.length() && memcmp(e.index, index.c_str(), e.index_len) == 0) {
+                results.push_back(e.value);
             }
-            current_offset = e->next;
+            current_offset = e.next;
         }
 
         if (results.empty()) {
